@@ -1,0 +1,66 @@
+<!doctype html><html><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Draft: BCH payment address from a Nostr npub</title><style>body{max-width:860px;margin:2em auto;padding:0 1em;font-family:system-ui,sans-serif;line-height:1.55}pre{background:#f4f4f4;padding:.8em;overflow:auto}code{font-size:.92em}</style></head><body><h1>Draft: finding a BCH payment address from a Nostr npub</h1><p>Markdown source: <a href="spec.md">spec.md</a> · <a href="/">reference implementation</a></p><p>Status: draft for discussion. Written for <a href="https://github.com/cashonize/cashonize-wallet/issues/405">Cashonize issue #405</a> (&quot;pay to a Nostr identity once a BCH standard exists&quot;). License: CC0. Reference implementation, live now: <a href="https://bch-nostr-id.surge.sh">bch-nostr-id.surge.sh</a> (JS lookup/verify page plus MIT Python tools).</p>
+<h2>Goal</h2>
+<p>A sender types or picks an <code>npub</code> in a wallet&#39;s send form or address book. The wallet finds a BCH address that the <strong>owner of that npub agreed to</strong>, shows it, and lets the sender confirm. No new server, no custodian, and nothing for relays to forge.</p>
+<p>Issue #405 lists three directions. This draft takes direction 1 (an address published in a Nostr event) and adds direction 3 (a reusable paycode) as an optional field. It rejects direction 2 (paying to the npub key itself) for the reason given under Privacy and safety.</p>
+<h2>1. The binding event</h2>
+<p>One addressable Nostr event, published by the npub:</p>
+<pre><code>kind:       30078
+tags:       [&quot;d&quot;, &quot;bch-nostr-bind&quot;]
+            [&quot;i&quot;, &quot;bch:&lt;cashaddr&gt;&quot;, &quot;&lt;base64 BCH signmessage signature&gt;&quot;]
+            [&quot;statement&quot;, &quot;&lt;statement&gt;&quot;]
+content:    &lt;statement&gt;
+statement:  bch-nostr-bind.v1:&lt;nostr pubkey hex&gt;:&lt;cashaddr&gt;:&lt;unix ts&gt;
+</code></pre>
+<ul>
+<li><code>&lt;cashaddr&gt;</code> is a full <code>bitcoincash:</code> address. A token-aware <code>z...</code> address is allowed and lets the sender&#39;s wallet send CashTokens.</li>
+<li>The BCH signature is a standard Bitcoin Cash <code>signmessage</code> signature (the format Electron Cash produces) by the key of <code>&lt;cashaddr&gt;</code>, over the exact statement string.</li>
+<li>Because the event is addressable (kind 30000-39999 with a <code>d</code> tag), publishing a new one replaces the old one on relays.</li>
+</ul>
+<p>So there are <strong>two signatures</strong>: the Nostr key signs the event (the npub claims the address), and the BCH key signs the statement (the address owner claims the npub). A relay or a third party can&#39;t fake either.</p>
+<h2>2. Optional kind 0 claim</h2>
+<p>The same <code>[&quot;i&quot;,&quot;bch:&lt;cashaddr&gt;&quot;,...]</code> tag may also be copied into the profile (kind 0) tags, NIP-39 style, so clients that render external identities show it. A wallet must not treat a kind 0 claim alone as verified: it can show it with a warning (&quot;unverified, address not signed&quot;), or ignore it.</p>
+<h2>3. Resolution (wallet side)</h2>
+<ol>
+<li>Decode the npub to its hex pubkey.</li>
+<li>Query relays for <code>{&quot;kinds&quot;:[30078], &quot;authors&quot;:[&lt;pk&gt;], &quot;#d&quot;:[&quot;bch-nostr-bind&quot;]}</code>. Relays: the user&#39;s NIP-65 list if known, plus a user-changeable default list (in line with the wallet&#39;s network privacy settings).</li>
+<li>Take the newest event that passes:<ul>
+<li>event id and BIP-340 signature valid for <code>&lt;pk&gt;</code>;</li>
+<li><code>content</code> parses as <code>bch-nostr-bind.v1</code>, and its pubkey equals <code>&lt;pk&gt;</code>;</li>
+<li>the <code>i</code> tag&#39;s address equals the statement address;</li>
+<li>the BCH signmessage signature verifies against that address.</li>
+</ul>
+</li>
+<li>Check for a key rotation (section 4). If a valid one exists, warn and point the user at the new key.</li>
+<li>Show the address (and a <code>bitcoincash:</code> URI) for confirmation. <strong>Never auto-send</strong> on resolution.</li>
+<li>Nothing valid found: no payment. Optionally fall back to a kind 0 claim, with a clear warning.</li>
+</ol>
+<p>Address books should store the npub, not the resolved address, and re-resolve at send time (the owner may have moved). Caching the last verified address to flag changes is a good idea.</p>
+<h2>4. Key rotation and recovery</h2>
+<p>If a Nostr key is lost or replaced, the <strong>new</strong> key publishes:</p>
+<pre><code>kind:     30078
+tags:     [&quot;d&quot;, &quot;bch-nostr-rotate&quot;], [&quot;p&quot;, &lt;old pk&gt;]
+          [&quot;oldsig&quot;, &lt;BIP-340 sig by the old key over sha256(content)&gt;]   and/or
+          [&quot;i&quot;, &quot;bch:&lt;bound cashaddr&gt;&quot;, &lt;BCH signmessage sig over content&gt;]
+content:  bch-nostr-rotate.v1:&lt;old pk hex&gt;:&lt;new pk hex&gt;:&lt;unix ts&gt;
+</code></pre>
+<p>A rotation is valid if it&#39;s authorized by the old Nostr key <strong>or</strong> by the BCH key bound to the old identity. The second path covers a lost nsec: the bound BCH wallet can still vouch for the new key. Wallets that find a valid rotation should warn (&quot;this identity moved to npub...&quot;) rather than silently switching.</p>
+<h2>5. Privacy and safety</h2>
+<ul>
+<li><strong>One public address.</strong> Direction 1 ties a single address to a public identity, so anyone can see the payments it receives. That&#39;s fine for tips and donations, but not for everything.</li>
+<li><strong>Optional paycode (direction 3).</strong> A binding may add <code>[&quot;rpa&quot;, &quot;&lt;paycode&gt;&quot;]</code> (the Reusable Addresses paycode format). Wallets that support RPA derive a fresh address per payment, and other wallets fall back to the cashaddr. The paycode should be covered by the BCH signature in a v2 statement. That&#39;s left open here on purpose until a wallet implements RPA sending.</li>
+<li><strong>Why not direction 2 (pay the npub key).</strong> The nsec usually sits in several Nostr clients and browser extensions, so it&#39;s a weak guard for money. It would also need new wallet code to spend from a Nostr key. A separate BCH key that signs a binding keeps the two roles apart.</li>
+<li><strong>Relay privacy.</strong> Lookups reveal to the relay which npub the sender is about to pay. A user-changeable relay list (or the wallet&#39;s own relay) limits this.</li>
+</ul>
+<h2>6. Open questions for wallet devs</h2>
+<ol>
+<li>Is kind 30078 with <code>d=bch-nostr-bind</code> acceptable, or would a dedicated NIP kind be preferred? (30078 works on every relay today.)</li>
+<li>Should the statement add a chain/network field (mainnet vs chipnet), or is the cashaddr prefix enough? (<code>bchtest:</code> addresses already carry it.)</li>
+<li>Should the kind 0 fallback exist at all?</li>
+</ol>
+<h2>7. Reference implementation</h2>
+<ul>
+<li>Lookup + verify in the browser, with no backend: <a href="https://bch-nostr-id.surge.sh">bch-nostr-id.surge.sh</a> (the &quot;Pay&quot; section runs exactly steps 1-5 above).</li>
+<li>Python: create/verify a binding, rotation, and a payment watcher (MIT), linked from the same page.</li>
+<li>BCH signatures tested both ways against Electron Cash 4.4.6 (q and z addresses).</li>
+</ul>
+</body></html>
