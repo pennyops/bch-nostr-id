@@ -1,0 +1,145 @@
+<!doctype html><meta charset="utf-8"><title>BCH ⇄ Nostr identity verifier</title>
+<!-- Vendor ESM from npm packs (noble-hashes 1.8.0, integrity verified). -->
+<h1>BCH ⇄ Nostr identity verifier</h1>
+<p>Checks whether a Nostr key has published a signed binding to a Bitcoin Cash address (kind 30078, d=bch-nostr-bind). Both signatures are verified in your browser: the Nostr schnorr sig and the BCH signmessage sig. Nothing is sent anywhere except relay queries. Wallet devs: see the <a href="spec/">draft spec</a> (npub to BCH address, for Cashonize #405).</p>
+<p>Nostr pubkey (npub or hex): <input id=pk size=70> <button id=go>Look up &amp; verify</button></p>
+<pre id=out></pre>
+<h2>Create your own binding</h2>
+<p>Needs a NIP-07 browser extension (nos2x, Alby) for the Nostr side and any BCH wallet that can sign messages (Electron Cash: Tools &gt; Sign/verify message; interop tested both ways against Electron Cash 4.4.6, see README in the source tarball). No private key ever touches this page.</p>
+<p>1. Your BCH cashaddr: <input id=ca size=60 placeholder="bitcoincash:q..."> <button id=st>Get statement</button></p>
+<p>2. Sign this exact text in your BCH wallet:<br><input id=stm size=110 readonly></p>
+<p>3. Paste the base64 signature: <input id=bs size=90> <button id=pub>Verify, sign with Nostr &amp; publish</button></p>
+<pre id=out2></pre>
+<h2>Log in with your bound identity (demo)</h2>
+<p>A site sends a one-time challenge; you sign it with your Nostr key (and optionally your BCH key). The site checks it against your published binding. Nothing is published.</p>
+<p><button id=ch>New challenge</button> <input id=chs size=90 readonly></p>
+<p>Optional BCH signature of that text: <input id=abs size=90> <button id=lg>Sign with Nostr &amp; check</button></p>
+<pre id=out3></pre>
+<h2>Pay a Nostr identity (stretch: identity-based payments)</h2>
+<p>Enter someone's npub: the page fetches their binding, verifies both signatures, and only then builds a BCH payment link to the proven address. No address copy-paste, no trust in a profile field.</p>
+<p>npub or hex: <input id=ppk size=70> amount BCH (optional): <input id=pam size=10> <button id=pay>Resolve &amp; build payment link</button></p>
+<pre id=out4></pre><p id=paylink></p>
+<h2>Prove you are the payer (stretch: proof-of-payment login)</h2>
+<p>A merchant can link a session to a payment without any account: the payer signs a fresh challenge with the BCH key of an address that funded the transaction (Electron Cash: Tools &gt; Sign/verify message). Transaction inputs are fetched from the public Blockchair API. The challenge commits to the txid, this site, a random nonce and a timestamp, so a signature cannot be replayed for another order. Caveat: this proves control of an input key (the <i>payer of record</i>). For exchange withdrawals or pooled/CoinJoin txs that is not the customer, so it is strongest for self-custody payers.</p>
+<p>txid <input id=poptx size=66> <button id=popnew>New challenge</button></p>
+<p>challenge <input id=popch size=80 readonly></p>
+<p>BCH signature (base64) <input id=popsig size=90> <button id=popgo>Verify payer</button></p>
+<pre id=poplog></pre>
+<script>
+(function(){const $=i=>document.getElementById(i),L=t=>$('poplog').textContent=t;
+$('popnew').onclick=()=>{const tx=$('poptx').value.trim().toLowerCase();if(!/^[0-9a-f]{64}$/.test(tx)){L('enter a 64-hex txid');return;}
+ const n=Array.from(crypto.getRandomValues(new Uint8Array(12)),b=>b.toString(16).padStart(2,'0')).join('');
+ $('popch').value='bch-nostr-id payer-proof '+tx+' '+location.host+' '+n+' '+new Date().toISOString();L('sign the challenge with a key that funded the tx');};
+$('popgo').onclick=async()=>{try{const ch=$('popch').value,tx=$('poptx').value.trim().toLowerCase();
+ if(!ch||ch.indexOf(' '+tx+' ')<0){L('make a new challenge for this txid first');return;}
+ L('fetching tx inputs...');const r=await fetch('https://api.blockchair.com/bitcoin-cash/dashboards/transaction/'+tx);const j=await r.json();
+ const t=j.data&&j.data[tx];if(!t){L('tx not found');return;}
+ const ins=[...new Set(t.inputs.map(i=>i.recipient).filter(Boolean).map(a=>a.indexOf(':')<0?'bitcoincash:'+a:a))];
+ const sig=$('popsig').value.trim();for(const a of ins){let ok=false;try{ok=window.bchVerify(a,ch,sig);}catch(e){console.log(e)}
+  if(ok){const v=t.outputs.reduce((s,o)=>s+o.value,0);L('PAYER VERIFIED: '+a+' funded tx '+tx.slice(0,16)+'.. (outputs total '+(v/1e8)+' BCH, '+(t.transaction.block_id>0?'confirmed':'unconfirmed')+')');return;}}
+ L('signature does not match any of the '+ins.length+' input address(es) of this tx');}catch(e){L('error: '+e);}};})();
+</script>
+<h2>Check a selective disclosure (stretch: privacy-preserving credentials)</h2>
+<p>Paste an attestation event whose claim is <code>sd-sha256:...</code> (made with py/disclose.py) and the field triples the holder chose to reveal, as JSON <code>[["over18","true","&lt;salt hex&gt;"]]</code>. The check runs offline: attester signature, statement format, then each revealed field must hash into the signed list. Undisclosed fields stay hidden. (The pinned binding is checked in "Pay a Nostr identity".) Try it: <a href="sd_example.json">sd_example.json</a>.</p>
+<textarea id=sdAtt rows=4 style="width:100%" placeholder="attestation event JSON"></textarea>
+<textarea id=sdRev rows=2 style="width:100%" placeholder='[["field","value","salt"]]'></textarea>
+<button id=sdGo>Check disclosure</button><pre id=sdOut></pre>
+<h2>Stretch goals covered</h2><ul><li>Selective disclosure: py/disclose.py (salted-hash credentials; reveal only the fields a verifier needs, e.g. over18, nothing personal on relays).</li><li>Proof-of-payment login: "Prove you are the payer" above (payer signs a challenge with the key of a tx input address; no accounts).</li>
+<li>Identity-based BCH payments: "Pay a Nostr identity" above (verified address only).</li>
+<li>Verifiable credentials / portable reputation: py/attest.py (third-party attestations pinned to a binding id).</li>
+<li>Key rotation &amp; recovery: py/rotate.py + the Pay flow above warns when a key has a valid rotate event (old Nostr key, or the bound BCH key if the Nostr key is lost).</li>
+<li>Interoperability: open spec (kind 30078 + NIP-39 i-tag), standard BCH signmessage (tested against Electron Cash), MIT Python + JS reference.</li></ul>
+<h2>How it works</h2>
+<p>A binding is one Nostr event (kind 30078, d-tag <code>bch-nostr-bind</code>). Its content is the statement <code>bch-nostr-bind.v1:&lt;nostr pubkey hex&gt;:&lt;cashaddr&gt;:&lt;unix ts&gt;</code>. It carries the tag <code>["i","bch:&lt;cashaddr&gt;","&lt;base64 BCH signmessage sig&gt;"]</code>.</p>
+<p>To verify: (1) check the event id and the BIP-340 signature; (2) check that the statement names this pubkey and the address in the i-tag; (3) recover the public key from the BCH message signature and check that it hashes to that address (q... or token-aware z...). Both keys sign the same statement, so neither side can claim the other alone. Rebinding = publish a newer event (addressable kind, latest wins).</p>
+<p>Python: <code>binding.verify_binding(event)</code> returns (ok, address, reason); <code>discover.py lookup &lt;hex&gt;</code> queries relays. <code>auth.py</code> has a challenge-response login (a site sends a nonce, the user signs it with the bound BCH key).</p>
+<p>NIP-39 profile claim (optional): the same i-tag can be copied into your kind 0 profile tags, so clients that render external identities show the address. Your profile then points at it; the kind 30078 event stays the full verifiable record (the i-tag proof is the BCH signature over the statement, which clients rebuild from the binding event). Example: the npub behind this page lists <code>bch:bitcoincash:qqheja48x3q3u8vxv5eue74gzpcf6x49cs5zxa36g7</code> this way.</p>
+<p><a href="bch-nostr-id-src.tar.gz">Source (Python reference + this page, MIT)</a></p>
+<script type=importmap>{"imports":{"@noble/hashes/crypto":"./vendor/hashes/package/esm/crypto.js","@noble/hashes/utils":"./vendor/hashes/package/esm/utils.js","@noble/hashes/":"./vendor/hashes/package/esm/"}}</script>
+<script type=module>
+import { secp256k1, schnorr } from './vendor/curves/package/esm/secp256k1.js';
+import { sha256 } from './vendor/hashes/package/esm/sha256.js';
+import { ripemd160 } from './vendor/hashes/package/esm/ripemd160.js';
+const RELAYS=['wss://nos.lol','wss://relay.primal.net','wss://nostr.mom','wss://relay.damus.io'];
+const te=new TextEncoder(), hex=b=>[...b].map(x=>x.toString(16).padStart(2,'0')).join('');
+const unhex=h=>Uint8Array.from(h.match(/../g).map(x=>parseInt(x,16)));
+const log=s=>out.textContent+=s+'\n';
+function npubToHex(n){const CS='qpzry9x8gf2tvdw0s3jn54khce6mua7l';const d=[...n.slice(n.lastIndexOf('1')+1)].map(c=>CS.indexOf(c));if(d.some(x=>x<0))throw Error('bad npub');let acc=0,bits=0;const r=[];for(const v of d.slice(0,-6)){acc=((acc<<5)|v)&0xfff;bits+=5;if(bits>=8){bits-=8;r.push((acc>>bits)&255);}}return hex(r);}
+function eventId(e){return hex(sha256(te.encode(JSON.stringify([0,e.pubkey,e.created_at,e.kind,e.tags,e.content]))));}
+function varint(n){return n<253?Uint8Array.of(n):Uint8Array.of(253,n&255,n>>8);}
+function cat(...a){const r=new Uint8Array(a.reduce((s,x)=>s+x.length,0));let o=0;for(const x of a){r.set(x,o);o+=x.length;}return r;}
+function msgHash(m){const b=te.encode(m);return sha256(sha256(cat(Uint8Array.of(24),te.encode('Bitcoin Signed Message:\n'),varint(b.length),b)));}
+// CashAddr
+const CH='qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+function polymod(v){let c=1n;const G=[0x98f2bc8e61n,0x79b76d99e2n,0xf33e5fb3c4n,0xae2eabe2a8n,0x1e4f43e470n];for(const d of v){const c0=c>>35n;c=((c&0x07ffffffffn)<<5n)^BigInt(d);for(let i=0;i<5;i++)if((c0>>BigInt(i))&1n)c^=G[i];}return c^1n;}
+function conv(data,from,to){let acc=0,bits=0;const r=[];for(const v of data){acc=(acc<<from)|v;bits+=from;while(bits>=to){bits-=to;r.push((acc>>bits)&((1<<to)-1));}}if(bits)r.push((acc<<(to-bits))&((1<<to)-1));return r;}
+function cashaddr(h160,ver=0){const p=conv([ver,...h160],8,5);const pre=[...'bitcoincash'].map(c=>c.charCodeAt(0)&31);const m=polymod([...pre,0,...p,0,0,0,0,0,0,0,0]);const cs=[];for(let i=0;i<8;i++)cs.push(Number((m>>BigInt(5*(7-i)))&31n));return 'bitcoincash:'+[...p,...cs].map(x=>CH[x]).join('');}
+function bchVerify(addr,msg,b64){const s=Uint8Array.from(atob(b64),c=>c.charCodeAt(0));const hdr=s[0];const rec=(hdr-27)&3,comp=hdr>=31;
+  const sig=secp256k1.Signature.fromCompact(s.slice(1)).addRecoveryBit(rec);const P=sig.recoverPublicKey(msgHash(msg));
+  const h=ripemd160(sha256(P.toRawBytes(comp)));return cashaddr(h,0)===addr||cashaddr(h,0x10)===addr;}window.bchVerify=bchVerify;
+async function verify(e){
+  if(eventId(e)!==e.id)return'bad id';
+  if(!schnorr.verify(unhex(e.sig),unhex(e.id),unhex(e.pubkey)))return'bad nostr sig';
+  const i=e.tags.find(t=>t[0]==='i'&&t[1].startsWith('bch:'));if(!i)return'no bch i-tag';
+  const addr=i[1].slice(4),p=e.content.split(':');
+  if(p.length!==5||p[0]!=='bch-nostr-bind.v1'||p[1]!==e.pubkey||p[2]+':'+p[3]!==addr)return'statement mismatch';
+  return bchVerify(addr,e.content,i[2])?'ok '+addr:'bad bch sig';}
+go.onclick=()=>{out.textContent='';let pk=document.getElementById('pk').value.trim().toLowerCase();if(pk.startsWith('npub1')){try{pk=npubToHex(pk);}catch(e){log('invalid npub');return;}}if(!/^[0-9a-f]{64}$/.test(pk)){log('need 64-hex or npub');return;}let got=0;setTimeout(()=>{if(!got)log('no binding found on '+RELAYS.length+' relays');},6000);
+  for(const u of RELAYS){const ws=new WebSocket(u);ws.onopen=()=>ws.send(JSON.stringify(['REQ','b',{kinds:[30078],authors:[pk],'#d':['bch-nostr-bind'],limit:3}]));
+    ws.onmessage=async m=>{const d=JSON.parse(m.data);if(d[0]==='EVENT'){got++;log(u+': '+await verify(d[2]));}if(d[0]==='EOSE')ws.close();};}};
+// --- create flow (NIP-07) ---
+const log2=s=>out2.textContent+=s+'\n';let myPk=null;
+st.onclick=async()=>{out2.textContent='';let a=ca.value.trim().toLowerCase();if(!a.startsWith('bitcoincash:'))a='bitcoincash:'+a;
+  if(!/^bitcoincash:[qz][02-9ac-hj-np-z]{41}$/.test(a)){log2('need a P2PKH cashaddr (bitcoincash:q... or token-aware bitcoincash:z...)');return;}ca.value=a;
+  if(!window.nostr){log2('no NIP-07 extension found (install nos2x or Alby)');return;}
+  try{myPk=await window.nostr.getPublicKey();}catch(e){log2('extension refused: '+e);return;}
+  stm.value='bch-nostr-bind.v1:'+myPk+':'+a+':'+Math.floor(Date.now()/1000);log2('nostr pubkey '+myPk);};
+pub.onclick=async()=>{out2.textContent='';const S=stm.value,a=ca.value.trim(),sig=bs.value.trim();if(!S||!myPk){log2('do step 1 first');return;}
+  let okb=false;try{okb=bchVerify(a,S,sig);}catch(e){}if(!okb){log2('BCH signature does not match this address + statement');return;}
+  log2('BCH signature OK');const ts=+S.split(':').pop();
+  const ev={kind:30078,created_at:ts,content:S,tags:[['d','bch-nostr-bind'],['i','bch:'+a,sig],['statement',S]]};
+  let se;try{se=await window.nostr.signEvent(ev);}catch(e){log2('nostr signing refused: '+e);return;}
+  const v=await verify(se);log2('local check: '+v);if(!v.startsWith('ok'))return;
+  for(const u of RELAYS){const ws=new WebSocket(u);ws.onopen=()=>ws.send(JSON.stringify(['EVENT',se]));
+    ws.onmessage=m=>{const d=JSON.parse(m.data);if(d[0]==='OK'){log2(u+': '+(d[2]?'published':'rejected '+d[3]));ws.close();}};ws.onerror=()=>log2(u+': connection error');}
+  pk.value=myPk;};
+// --- auth demo (mirrors auth.py check) ---
+const log3=s=>out3.textContent+=s+'\n';let nonce=null;const APP=location.host||'local';
+ch.onclick=()=>{nonce=hex(crypto.getRandomValues(new Uint8Array(16)));chs.value='bch-nostr-auth.v1:'+APP+':'+nonce;out3.textContent='';};
+function getBinding(pk){return new Promise(res=>{let best=null,n=0;const done=()=>res(best);setTimeout(done,6000);
+  for(const u of RELAYS){let ws;try{ws=new WebSocket(u);}catch(e){continue;}ws.onopen=()=>ws.send(JSON.stringify(['REQ','a',{kinds:[30078],authors:[pk],'#d':['bch-nostr-bind'],limit:1}]));
+    ws.onmessage=m=>{const d=JSON.parse(m.data);if(d[0]==='EVENT'&&(!best||d[2].created_at>best.created_at))best=d[2];if(d[0]==='EOSE'){ws.close();if(++n===RELAYS.length)done();}};ws.onerror=()=>{if(++n===RELAYS.length)done();};}});}
+lg.onclick=async()=>{out3.textContent='';if(!nonce){log3('get a challenge first');return;}if(!window.nostr){log3('no NIP-07 extension found');return;}
+  let ev;try{ev=await window.nostr.signEvent({kind:22242,created_at:Math.floor(Date.now()/1000),content:'',tags:[['challenge',nonce],['app',APP]]});}catch(e){log3('signing refused: '+e);return;}
+  if(eventId(ev)!==ev.id||!schnorr.verify(unhex(ev.sig),unhex(ev.id),unhex(ev.pubkey))){log3('bad auth signature');return;}
+  const t=Object.fromEntries(ev.tags.map(x=>[x[0],x[1]]));if(t.challenge!==nonce||t.app!==APP){log3('wrong challenge/app');return;}
+  if(Math.abs(Date.now()/1000-ev.created_at)>300){log3('stale');return;}
+  log3('nostr auth signature OK, fetching binding...');const b=await getBinding(ev.pubkey);if(!b){log3('no binding for this pubkey');return;}
+  const v=await verify(b);if(!v.startsWith('ok')){log3('binding: '+v);return;}const addr=v.slice(3);
+  const bsig=abs.value.trim();if(bsig){let ok=false;try{ok=bchVerify(addr,chs.value,bsig);}catch(e){}if(!ok){log3('bad BCH auth signature');return;}}
+  log3('authenticated '+ev.pubkey.slice(0,12)+'.. + '+addr+(bsig?' (both keys)':' (nostr key)'));nonce=null;};
+// --- pay-to-identity ---
+const log4=s=>out4.textContent+=s+'\n';
+pay.onclick=async()=>{out4.textContent='';paylink.textContent='';let pk=ppk.value.trim().toLowerCase();if(pk.startsWith('npub1')){try{pk=npubToHex(pk);}catch(e){log4('invalid npub');return;}}
+  if(!/^[0-9a-f]{64}$/.test(pk)){log4('need 64-hex or npub');return;}const am=pam.value.trim();if(am&&!/^\d{1,8}(\.\d{1,8})?$/.test(am)){log4('bad amount');return;}
+  log4('fetching binding...');const b=await getBinding(pk);if(!b){log4('no binding published for this key: do not pay');return;}
+  const v=await verify(b);if(!v.startsWith('ok')){log4('binding invalid ('+v+'): do not pay');return;}const addr=v.slice(3);
+  log4('verified: nostr key '+pk.slice(0,12)+'.. controls '+addr+(addr.startsWith('bitcoincash:z')?' (token-aware: can receive CashTokens)':''));
+  const uri=addr+(am?'?amount='+am:'');const a=document.createElement('a');a.href=uri;a.textContent='Open in wallet: '+uri;paylink.appendChild(a);
+  const seen={};let nv=0;const rots=[];for(const u of RELAYS){try{const ws=new WebSocket(u);ws.onopen=()=>ws.send(JSON.stringify(['REQ','at',{kinds:[30078],'#p':[pk],limit:50}]));
+    ws.onmessage=m=>{const d=JSON.parse(m.data);if(d[0]==='EOSE'){ws.close();return;}if(d[0]!=='EVENT')return;const e=d[2];if(seen[e.id])return;seen[e.id]=1;
+      const dt=(e.tags.find(t=>t[0]==='d')||[])[1]||'';if(dt==='bch-nostr-rotate'){const c=e.content.split(':');if(eventId(e)!==e.id||!schnorr.verify(unhex(e.sig),unhex(e.id),unhex(e.pubkey))||c.length!==4||c[0]!=='bch-nostr-rotate.v1'||c[1]!==pk||c[2]!==e.pubkey)return;
+      const h=sha256(te.encode(e.content));const how=[];for(const t of e.tags){try{if(t[0]==='oldsig'&&schnorr.verify(unhex(t[1]),h,unhex(pk)))how.push('old nostr key');if(t[0]==='i'&&t[1]==='bch:'+addr&&bchVerify(addr,e.content,t[2]))how.push('bound BCH key');}catch(x){}}
+      if(how.length)rots.push({e,how});return;}
+      if(!dt.startsWith('bch-nostr-attest:'))return;const tg={};e.tags.forEach(t=>tg[t[0]]=t[1]);
+      const ok=eventId(e)===e.id&&schnorr.verify(unhex(e.sig),unhex(e.id),unhex(e.pubkey))&&tg.e===b.id&&e.content==='bch-nostr-attest.v1:'+e.pubkey+':'+pk+':'+b.id+':'+(tg.claim||'');
+      if(ok){nv++;log4('attestation by '+e.pubkey.slice(0,12)+'..: "'+tg.claim+'" (valid, pinned to this binding)');}};}catch(x){}}
+  setTimeout(()=>{if(rots.length){rots.sort((x,y)=>y.e.created_at-x.e.created_at);const r=rots[0];log4('KEY ROTATED: this identity moved to '+r.e.pubkey.slice(0,12)+'.. (authorized by '+r.how.join(' + ')+'); look up the new key before paying'+(rots.length>1?' [latest of '+rots.length+' valid rotate events]':''));}log4(nv+' valid attestation(s) found');},6000);};
+
+document.getElementById('sdGo').onclick=()=>{const o=document.getElementById('sdOut');try{const e=JSON.parse(document.getElementById('sdAtt').value),rv=JSON.parse(document.getElementById('sdRev').value);
+if(eventId(e)!==e.id)return o.textContent='bad event id';if(!schnorr.verify(unhex(e.sig),unhex(e.id),unhex(e.pubkey)))return o.textContent='bad attester signature';
+const tg=Object.fromEntries(e.tags.map(t=>[t[0],t[1]])),c=tg.claim||'';if(e.content!=='bch-nostr-attest.v1:'+e.pubkey+':'+tg.p+':'+tg.e+':'+c)return o.textContent='statement mismatch';
+if(!c.startsWith('sd-sha256:'))return o.textContent='not a selective-disclosure attestation';const S=new Set(c.slice(10).split(','));const ok=[];
+for(const [f,v,s] of rv){if(!S.has(hex(sha256(cat(unhex(s),te.encode(':'+f+'='+v))))))return o.textContent='field "'+f+'" NOT covered by attestation';ok.push(f+'='+v);}
+o.textContent='VALID: attester '+e.pubkey.slice(0,12)+'.. vouches '+ok.join(', ')+' ('+ok.length+' of '+S.size+' fields disclosed) for subject '+(tg.p||'').slice(0,12)+'.., binding '+(tg.e||'').slice(0,12)+'..';}catch(x){o.textContent='error: '+x.message}};
+</script>
